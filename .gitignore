@@ -1,4 +1,4 @@
 **/data/
-**/runs/
-**/weights/
+# **/runs/
+# **/weights/
 **/__pycache__/
