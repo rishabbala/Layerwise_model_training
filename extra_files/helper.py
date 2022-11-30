@@ -60,7 +60,7 @@ def CreateModelName(args):
 class OptimScheduler():
 
     '''
-    Optimizer Scheduler to reduce learning rate if there exists too much bounce, and stop if loss doesnt go down
+    Optimizer Scheduler to reduce learning rate if there exists too much bounce, and stop if accuracy doesnt go up
     
     num_additions: the number of blocks to be added, so that we dont train the early blocks for too long
     window: window over which we consider if the accuracy changes
@@ -71,63 +71,81 @@ class OptimScheduler():
     '''
 
     def __init__(self, args, num_additions):
-        self.window = 10
-        self.loss_list = []
-        self.loss_swing = []
+        self.window = 5
+        self.acc_list = []
+        self.acc_swing = []
         self.args = args
         
-        self.loss_swing_thresh = 1e-3
+        self.acc_swing_thresh = 0.03
 
-        if self.args.combined:
+        if self.args.early_stop:
             self.min_lr = 2e-4
-            self.window = 5
+            self.window = 3
         else:
             self.min_lr = 1e-5
-            self.window = 10
+            self.window = 5
         
         self.change = True
         self.flag = 0
         self.pos = 0
+        self.decay_epochs = 0
         self.num_additions = num_additions
 
+        self.lr = 0
 
-    def update(self, loss, optim):
 
-        self.change = False
+    def update(self, acc, optim):
+
+        acc *= 100
+
+        if self.decay_epochs > 0:
+            print("Cosine decay final")
+            for op in optim.param_groups:
+                op['lr'] = self.lr * np.cos(np.pi*self.decay_epochs/(2*10)) ## 10 epochs decay to zero
+                if op['lr'] <= 0:
+                    exit()
+                
+            self.decay_epochs += 1
+            return
 
         if self.pos == self.num_additions-1 and self.flag == 0:
             print("Last Training")
-            self.min_lr = 1e-5
-            self.window = 10
+            self.min_lr = 5e-5
+            self.window = 5
             self.flag += 1
 
-        if len(self.loss_list) >= self.window:
-            self.loss_list.pop(0)
-            self.loss_swing.pop(0)
+        self.change = False
+
+        if len(self.acc_list) >= self.window:
+            self.acc_list.pop(0)
+            self.acc_swing.pop(0)
         
-        self.loss_list.append(loss)
+        self.acc_list.append(acc)
 
-        if len(self.loss_list) > 1:
-            self.loss_swing.append(self.loss_list[-1]-self.loss_list[-2])
+        if len(self.acc_list) > 1:
+            self.acc_swing.append(self.acc_list[-1]-self.acc_list[-2])
 
-        if len(self.loss_list) == self.window and abs(sum(self.loss_swing)) < self.loss_swing_thresh:
-            print("Changing Learning Rate")
-            self.loss_list = []
-            self.loss_swing = []
-            self.loss_swing_thresh /= 2
-            for op in optim.param_groups:
-                op['lr'] /= 2
-                if op['lr'] < self.min_lr:
-                    self.change = True
- 
+        if len(self.acc_list) == self.window and abs(sum(self.acc_swing)) < self.acc_swing_thresh:
+
+            self.acc_swing_thresh /= 2
+
+            # for op in optim.param_groups:
+            #     op['lr'] /= 5
+            #     self.lr = op['lr']
+
+            #     if op['lr'] <= self.min_lr:
+            #         self.change = True
+            
         if self.change:
             if self.pos != self.num_additions-1:
-                self.loss_swing_thresh = 0.1
+                self.acc_swing_thresh = 0.1
                 print("Changing from {}".format(self.pos))
                 
             else:
+                self.decay_epochs = 1
+                self.change = False
                 print("Converged")
-                exit()
 
+            self.acc_list = []
+            self.acc_swing = []
             self.pos += 1
-            

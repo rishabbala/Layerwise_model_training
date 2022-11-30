@@ -2,170 +2,188 @@ import torch
 import torchvision
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
-from torch.optim import Adam, SGD
 from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, MultiStepLR
 import argparse
 import os
 import math
+from torchvision import transforms
+import time
+from timm.scheduler import create_scheduler_v2
+from timm.loss import SoftTargetCrossEntropy
+from sgd_hd import SGDHD
+from adam_hd import AdamHD
+from adamw_hd import AdamWHD
+import math
 
-from resnet import MakeResnet
-from helper_functions import CreateModelName, CreateDataLoader
-from conf import get_args
-from imagenet_loader import ImagenetDataset
-from tiny_imagenet_loader import TinyImagenetDataset
-from create_model import CreateBlockwiseResnet
+
+from helper_functions import CreateModelName, OptimScheduler
+from config import get_args
+from dataloader.imagenet_loader import ImagenetDataset
+from dataloader.tiny_imagenet_loader import TinyImagenetDataset
+from create_model import ModelClass
+from loss.conloss import ContrastiveLoss
+from timm.utils import ApexScaler, NativeScaler
 
 
 
 def train():
+    '''
+    train one epoch:
+    model: taken from main()
+    '''
+
+
+    model.train()
 
     train_loss = 0
     train_acc = 0
     num_train_images = 0
+
     for idx, (images, labels) in enumerate(train_dataloader):
-        
+
         optim.zero_grad()
-        images = images.to(device)
-        labels = labels.to(device)
-        
+
         out = model(images)
+        loss = soft_cross_entropy_loss(out, labels)
         pred = torch.argmax(out, dim=1)
 
-        loss = cross_entropy_loss(out, labels)
-        train_acc += torch.sum(torch.where(pred==labels, 1, 0))
-        train_loss += loss.item()
-        num_train_images += images.shape[0]
+        labels_max = torch.argmax(labels, dim=1)
+        train_acc += torch.sum(torch.where(pred==labels_max, 1, 0))
 
         loss.backward()
         optim.step()
+
+        train_loss += loss.item() * images.shape[0]
+        num_train_images += images.shape[0]
 
     train_acc = train_acc/num_train_images
     train_loss = train_loss/num_train_images
 
     return train_acc, train_loss
-    
 
 
 def test():
+    """
+    Evaluate One Epoch
+    """
 
     test_loss = 0
     test_acc = 0
     num_test_images = 0
 
-    for _,  (images, labels) in enumerate(test_dataloader):
-    
-        images = images.to(device)
-        labels = labels.to(device)
-        
-        out = model(images)
-        pred = torch.argmax(out, dim=1)
+    model.eval()
+    with torch.no_grad():
+        for _,  (images, labels) in enumerate(test_dataloader):
 
-        loss = cross_entropy_loss(out, labels)
-        test_loss += loss.item()
-        test_acc += torch.sum(torch.where(pred==labels, 1, 0))
-        num_test_images += images.shape[0]
-    
-    test_acc = test_acc/num_test_images
-    test_loss = test_loss/num_test_images
+            out = model(images)
+            loss = cross_entropy_loss(out, labels)
+
+            pred = torch.argmax(out, dim=1)
+            test_acc += torch.sum(torch.where(pred==labels, 1, 0))
+
+            test_loss += loss.item() * images.shape[0]
+            num_test_images += images.shape[0]
+
+        test_acc = test_acc/num_test_images
+        test_loss = test_loss/num_test_images
 
     return test_acc, test_loss
 
 
-
 if __name__ == "__main__":
+    '''
+    main:
+        CreateModelName: generates the model name from the input args
+    '''
+
+
+    start = time.time()
+
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print("device", device)
 
     args = get_args()
-    parameters = CreateModelName(args)
+    CreateModelName(args)
     writer = SummaryWriter('./runs/{}/{}/'.format(args.dataset, args.model_name))
 
-    train_dataloader, test_dataloader = CreateDataLoader(args)  
+    mc = ModelClass(args, device)
+    train_dataloader, test_dataloader = mc.CreateDataLoader()
 
-    model = parameters['model']
-    optim_parameters = parameters['optim_parameters']
-    num_layers_below = parameters['num_layers_below']
-    base_size = parameters['base_size']
-    layer_increase = parameters['layer_increase']
-    share_pos = parameters['share_pos']
-    num_epochs_per_each_block = parameters['num_epochs_per_each_block']
-    output_size = parameters['output_size']
+    soft_cross_entropy_loss = SoftTargetCrossEntropy().cuda()
+    cross_entropy_loss = nn.CrossEntropyLoss().cuda()
 
-    model = model.to(device)
-    cross_entropy_loss = nn.CrossEntropyLoss()
+    amp_autocast = torch.cuda.amp.autocast
+    loss_scaler = NativeScaler()
 
-    # Set the optimizer and scheduler for non-blockwise training
-    if not args.train_solo_layers:
-        if not args.share_weights:
-            optim = Adam(optim_parameters, lr=args.lr, weight_decay=1e-5)
-            lr_scheduler = MultiStepLR(optim, milestones=[0.3*args.n_epochs, 0.6*args.n_epochs, 0.8*args.n_epochs], gamma=0.2, last_epoch=-1)
-        else:
-            ## Warmup when weight sharing
-            optim = Adam(optim_parameters, lr=args.lr, weight_decay=1e-5)
-            lr_scheduler = ChainedScheduler([MultiStepLR(optim, milestones=[0.3*args.n_epochs, 0.6*args.n_epochs, 0.8*args.n_epochs], gamma=0.2, last_epoch=-1),
-                                             LinearLR(optim, start_factor=5e-3, end_factor=1, total_iters=0.1*args.n_epochs)])
-    
-    model.train()
-    test_loss_max = 1e9
+    test_acc_min = -1e9
     prev_epoch = 0
-
+    optim = None
+    lr_scheduler = None
+    # optim_scheduler = OptimScheduler(args, len(mc.block))
 
     for epoch in range (args.n_epochs):
-
-        # If adding and training layers sequentially, update the optimizer, scheduler, and num epochs accordingly
-        if args.train_solo_layers and args.share_weights and (share_pos == -1 or (share_pos != -1 and epoch-prev_epoch >= num_epochs_per_each_block[share_pos])):
-            test_loss_max = 1e9
-            prev_epoch = epoch
-            share_pos += 1
-
-            if share_pos > 0:
-                base_size[share_pos] += layer_increase[share_pos]
-                model, optim_parameters = CreateBlockwiseResnet(args, base_size, output_size, './weights/{}/{}/model.pth'.format(args.dataset, args.model_name), share_pos)
-                model.to(device)
-            
-            optim = Adam(optim_parameters, lr=args.lr, weight_decay=1e-5)
-            
-            # Warmup
-            lr_scheduler = ChainedScheduler([MultiStepLR(optim, milestones=[int(0.3*num_epochs_per_each_block[share_pos]), int(0.6*num_epochs_per_each_block[share_pos]), int(0.8*num_epochs_per_each_block[share_pos])], gamma=0.2, last_epoch=-1),
-                                             LinearLR(optim, start_factor=5e-3, end_factor=1, total_iters=0.2*num_epochs_per_each_block[share_pos])])
-
-        train_acc, train_loss = train()
         
-        model.eval()
+        # if optim_scheduler.change:
+        if epoch%mc.num_epochs_per_block == 0 and mc.cur_pos != len(mc.block)-1:
+            test_acc_min = -1e9
+            prev_epoch = epoch
+
+            model, optim = mc.create_custom_model(optim)
+
+            if not args.combined:
+                lr_scheduler, _ = create_scheduler_v2(optimizer=optim, sched='cosine', num_epochs=args.n_epochs, min_lr=1e-4, warmup_lr=1e-6, warmup_epochs=10, cooldown_epochs=10, patience_epochs=10, warmup_prefix=False, noise=None)
+
+            # optim_scheduler.change = False
+            for key, value in model.named_parameters():
+                print(key, value.requires_grad) 
+
+            model.to(device)
+
+        if lr_scheduler is None:
+            for opt in optim.param_groups:
+                e = (epoch%mc.num_epochs_per_block)-5
+                n = args.n_epochs - (len(mc.block)-1) * mc.num_epochs_per_block - 5
+                n2 = epoch - (len(mc.block)-1) * mc.num_epochs_per_block - 5
+
+                if epoch%mc.num_epochs_per_block <= 5 and mc.cur_pos != len(mc.block)-1:
+                    opt['lr'] = 2e-4 * (epoch%mc.num_epochs_per_block) / 5 + 4e-4
+                elif mc.cur_pos != len(mc.block)-1:
+                    opt['lr'] = 4e-4 + 0.5 * (2e-4) * (1 + math.cos(e*math.pi/(mc.num_epochs_per_block-5)))
+                else:
+                    opt['lr'] = 1e-4 + 0.5 * (5e-4) * (1 + math.cos(n2*math.pi/n))
+                    
+        train_acc, train_loss = train()
         test_acc, test_loss = test()
-        model.train()
 
-        if test_loss < test_loss_max:
+        if test_acc > test_acc_min:
 
-            test_loss_max = test_loss
+            test_acc_min = test_acc
             torch.save(model.state_dict(), './weights/{}/{}/model.pth'.format(args.dataset, args.model_name))
 
-            if args.share_weights:
-                # Because of warmup
-                torch.save({'train_loss': train_loss,
-                            'train_acc': train_acc, 
-                            'test_loss': test_loss,
-                            'test_acc': test_acc,
-                            'epoch': epoch, 
-                            'lr': lr_scheduler._schedulers[-1].get_last_lr()}, './weights/{}/{}/info.pth'.format(args.dataset, args.model_name))
-                    
-            else:
-                # Because of no warmup
-                torch.save({'train_loss': train_loss,
-                            'train_acc': train_acc, 
-                            'test_loss': test_loss,
-                            'test_acc': test_acc,
-                            'epoch': epoch, 
-                            'lr': lr_scheduler.get_last_lr()}, './weights/{}/{}/info.pth'.format(args.dataset, args.model_name))
+            # Because of warmup
+            torch.save({'train_loss': train_loss,
+                        'train_acc': train_acc, 
+                        'test_loss': test_loss,
+                        'test_acc': test_acc,
+                        'epoch': epoch}, './weights/{}/{}/info.pth'.format(args.dataset, args.model_name)) #'lr': lr_scheduler.get_last_lr()[0]
 
-
-        if args.share_weights:
-            print("Epoch: {}/{}, model: {}, lr multi step: {}, lr final: {}".format(epoch, args.n_epochs, args.model_name, lr_scheduler._schedulers[0].get_last_lr()[0], lr_scheduler._schedulers[-1].get_last_lr()[0]))
-        else:
-            print("Epoch: {}/{}, model: {}, lr: {}".format(epoch, args.n_epochs, args.model_name, lr_scheduler.get_last_lr()[0]))        
+        print("Epoch: {}/{}, model: {}, lr:{}".format(epoch, args.n_epochs, args.model_name, optim.param_groups[0]['lr']))
 
         writer.add_scalar('Train Loss', train_loss, epoch)
         writer.add_scalar('Train Acc', train_acc, epoch)
         writer.add_scalar('Val Loss', test_loss, epoch)
         writer.add_scalar('Val Acc', test_acc, epoch)
+        writer.add_scalar('Learning Rate', optim.param_groups[0]['lr'], epoch)
 
-        lr_scheduler.step()
+        if lr_scheduler is not None:
+            lr_scheduler.step(epoch+1, test_loss)
+
+        # lr_scheduler.step()
+
+        # acc_to_use = test_acc
+        
+        # # if epoch-prev_epoch>args.warmup_epochs:
+        # optim_scheduler.update(acc_to_use, optim)
+
+        # # if optim_scheduler.change:
+        # #     torch.save(model.state_dict(), './weights/{}/{}/model_{}.pth'.format(args.dataset, args.model_name, optim_scheduler.pos))
