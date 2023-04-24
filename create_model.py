@@ -17,6 +17,8 @@ from timm.optim import create_optimizer_v2, optimizer_kwargs
 from models.config import get_block_size, get_model_func
 from data_pruning.memorize_dataloader import MemorizationDataloader
 
+from autoaug import CIFAR10Policy
+
 
 
 class ModelClass():
@@ -68,6 +70,8 @@ class ModelClass():
         if 'resnet' in self.args.model_name:
             model = self.func(num_linear_layers=self.args.num_linear_layers, output_size=self.args.output_size, dataset=self.args.dataset, block_size=self.block[self.cur_pos])
         elif 'vit' in self.args.model_name:
+            model = self.func(feature_dim=256, mlp_dim=512, num_blocks=self.block[self.cur_pos][0], num_heads=4, output_size=self.args.output_size)
+        elif 'vit_pool' in self.args.model_name:
             model = self.func(feature_dim=256, mlp_dim=512, num_blocks=self.block[self.cur_pos][0], num_heads=4, output_size=self.args.output_size)
         elif 'cct_2' in self.args.model_name:
             model = self.func(feature_dim=128, mlp_dim=128, num_blocks=self.block[self.cur_pos][0], num_heads=2, output_size=self.args.output_size, n_conv=2)
@@ -146,6 +150,20 @@ class ModelClass():
 
         # else:
 
+
+
+        # normalize = [transforms.Normalize(mean=mean_dataset_norm, std=std_dataset_norm)]
+        # augmentations = [CIFAR10Policy()]
+        # augmentations += [
+        #     transforms.RandomCrop(32, padding=4),
+        #     transforms.RandomHorizontalFlip(),
+        #     transforms.ToTensor(),
+        #     *normalize,
+        # ]
+
+
+        # augmentations = transforms.Compose(augmentations)
+
         if self.args.dataset == "cifar10":
             train_dataset = torchvision.datasets.CIFAR10(root='./data', train=True, transform=None)
             test_dataset = torchvision.datasets.CIFAR10(root='./data', train=False, transform=None)
@@ -160,8 +178,18 @@ class ModelClass():
 
         # must recompute imagenet values for now
         if self.args.dataset == "tiny_imagenet":
-            train_dataset = TinyImagenetDataset(split='train', transforms=train_transforms)
-            test_dataset = TinyImagenetDataset(split='val', transforms=test_transforms)
+            train_dataset = TinyImagenetDataset(split='train', transforms=None)
+            test_dataset = TinyImagenetDataset(split='val', transforms=None)
+
+
+
+        # train_dataloader = torch.utils.data.DataLoader(
+        #     train_dataset, batch_size=self.args.batch_size, shuffle=True, num_workers=16)
+
+        # test_dataloader = torch.utils.data.DataLoader(
+        #     test_dataset, batch_size=self.args.batch_size, shuffle=False, num_workers=16)
+
+
 
         mixup_args = dict(
                 mixup_alpha=0.8, cutmix_alpha=1.0, cutmix_minmax=None,
@@ -241,5 +269,46 @@ class ModelClass():
             model.load_state_dict(sd)
 
             new_optim = create_optimizer_v2(model, opt='adamw', lr=6e-4, weight_decay=3e-2, filter_bias_and_bn=True)
+
+            # ## copy/ init previous weights
+            # if 'cct' in self.args.model_name or 'vit' in self.args.model_name:
+            #     for key, value in model.named_parameters():
+            #         txt = key.split('.')
+            #         if txt[0] == 'transformer' and int(txt[1][-1]) == self.cur_pos:
+            #             # copy weights
+            #             t2 = copy.deepcopy(txt)
+            #             v = int(t2[1][-1])
+            #             t2[1] = t2[1][:-1] + str(v)
+            #             t2 = '.'.join(t2)
+            #             value.data = model.state_dict()[t2].data
+
+            #             ## init weights
+            #             # if 'to_qkv' in key:
+            #             #     eye = torch.eye(value.shape[1])
+            #             #     value.data = torch.cat((eye, eye, eye), dim=0)
+            #             # elif 'proj' in key:
+            #             #     if 'weight' in key:
+            #             #         value.data = torch.eye(value.shape[0])
+            #             #     elif 'bias' in key:
+            #             #         value.data = torch.zeros(value.shape)
+            #             # elif 'mlp.0' in key:
+            #             #     if 'weight' in key:
+            #             #         eye = torch.eye(value.shape[1])
+            #             #         value.data = eye.repeat(int(value.shape[0]/value.shape[1]), 1)
+            #             #     elif 'bias' in key:
+            #             #         value.data = torch.zeros(value.shape)
+            #             # elif 'mlp.2' in key:
+            #             #     if 'weight' in key:
+            #             #         eye = torch.eye(value.shape[0])
+            #             #         value.data = eye.repeat(1, int(value.shape[1]/value.shape[0]))
+            #             #     elif 'bias' in key:
+            #             #         value.data = torch.zeros(value.shape)
+
+
+            # #             # t2 = copy.deepcopy(txt)
+            # #             # v = int(t2[1][-1])
+            # #             # t2[1] = t2[1][:-1] + str(v)
+            # #             # t2 = '.'.join(t2)
+            # #             # value.data = model.state_dict()[t2].data
 
         return model, new_optim

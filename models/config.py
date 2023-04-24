@@ -1,6 +1,7 @@
 from .resnet import MakeResnet
 from .vit import ViT
 from .cct import CCT
+from .vit_pool import ViTPool
 from .vgg import MakeVGG
 import math
 
@@ -26,6 +27,8 @@ def get_block_size(args):
             block = [[1], [2], [3], [4], [5], [6], [7]]
         if 'vit' in args.model_name:
             block = [[1], [2], [3], [4], [5], [6], [7]]
+        if 'vit_pool' in args.model_name:
+            block = [[1], [2], [3], [4], [5], [6], [7]]
 
     else:
         if 'resnet18' in args.model_name:
@@ -40,12 +43,17 @@ def get_block_size(args):
             block = [[7]]
         if 'vit' in args.model_name:
             block = [[7]]
+        if 'vit_pool' in args.model_name:
+            block = [[7]]
         
 
     if block == None:
         raise ValueError("Model name incorrect")
 
-    num_epochs_per_block = math.floor(args.n_epochs / (len(block)+1))
+    if args.combined:
+        num_epochs_per_block = math.floor(args.n_epochs / (2*(len(block)-1)) )
+    else:
+        num_epochs_per_block = args.n_epochs
 
     return block, num_epochs_per_block
 

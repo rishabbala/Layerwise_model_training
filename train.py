@@ -41,11 +41,17 @@ def train():
 
     for idx, (images, labels) in enumerate(train_dataloader):
 
+        images = images.to(device)
+        labels = labels.to(device)
+
         optim.zero_grad()
 
         out = model(images)
         loss = soft_cross_entropy_loss(out, labels)
+        # loss = cross_entropy_loss(out, labels)
         pred = torch.argmax(out, dim=1)
+
+        # train_acc += torch.sum(torch.where(pred==labels, 1, 0))
 
         labels_max = torch.argmax(labels, dim=1)
         train_acc += torch.sum(torch.where(pred==labels_max, 1, 0))
@@ -74,6 +80,9 @@ def test():
     model.eval()
     with torch.no_grad():
         for _,  (images, labels) in enumerate(test_dataloader):
+
+            images = images.to(device)
+            labels = labels.to(device)
 
             out = model(images)
             loss = cross_entropy_loss(out, labels)
@@ -141,14 +150,27 @@ if __name__ == "__main__":
 
         if lr_scheduler is None:
             for opt in optim.param_groups:
+                # if mc.cur_pos != len(mc.block)-1:
+                #     n = mc.num_epochs_per_block
+                #     n2 = epoch%n
+                #     opt['lr'] = 5e-4 + 1e-4 * math.sin(n2*math.pi/n)
+                # else:
+                #     n = args.n_epochs - (len(mc.block)-1) * mc.num_epochs_per_block
+                #     n2 = epoch - (len(mc.block)-1) * mc.num_epochs_per_block
+                #     if n2 < n/4:
+                #         opt['lr'] = 5e-4 + 1e-4 * math.sin(2*n2*math.pi/n)
+                #     else:
+                #         opt['lr'] = 1e-4 + 5e-4 * math.sin(math.pi/2 + (n2-n/4)*math.pi/(2*n-n/2))
+
+
                 e = (epoch%mc.num_epochs_per_block)-5
                 n = args.n_epochs - (len(mc.block)-1) * mc.num_epochs_per_block - 5
                 n2 = epoch - (len(mc.block)-1) * mc.num_epochs_per_block - 5
 
                 if epoch%mc.num_epochs_per_block <= 5 and mc.cur_pos != len(mc.block)-1:
-                    opt['lr'] = 2e-4 * (epoch%mc.num_epochs_per_block) / 5 + 4e-4
+                    opt['lr'] = 5e-4 + 1e-4 * (epoch%mc.num_epochs_per_block) / 5
                 elif mc.cur_pos != len(mc.block)-1:
-                    opt['lr'] = 4e-4 + 0.5 * (2e-4) * (1 + math.cos(e*math.pi/(mc.num_epochs_per_block-5)))
+                    opt['lr'] = 5e-4 + 0.5 * (1e-4) * (1 + math.cos(e*math.pi/(mc.num_epochs_per_block-5)))
                 else:
                     opt['lr'] = 1e-4 + 0.5 * (5e-4) * (1 + math.cos(n2*math.pi/n))
                     

@@ -9,16 +9,16 @@ import torch.nn.functional as F
 
 class CCT(nn.Module):
 
-    def __init__(self, feature_dim=256, mlp_dim=512, num_blocks=7, num_heads=4, output_size=10, stochastic_depth=0.1, n_conv=2):
+    def __init__(self, feature_dim=256, mlp_dim=512, num_blocks=7, num_heads=4, output_size=10, stochastic_depth=0.0, n_conv=2):
         
         super().__init__()
-        self.num_patches = 256
         self.feature_dim = feature_dim
         self.mlp_dim = mlp_dim
         self.num_blocks = num_blocks
         self.num_heads = num_heads
 
         if n_conv == 2:
+            self.num_patches = 64
             self.encoder = nn.Sequential(OrderedDict([
                                         ('conv1', nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1, bias=False)),
                                         ('relu1', nn.ReLU(inplace=True)),
@@ -29,6 +29,7 @@ class CCT(nn.Module):
                                         ]))
 
         elif n_conv == 1:
+            self.num_patches = 256
             self.encoder = nn.Sequential(OrderedDict([
                                         ('conv1', nn.Conv2d(in_channels=3, out_channels=self.feature_dim, kernel_size=3, stride=1, padding=1, bias=False)),
                                         ('relu1', nn.ReLU(inplace=True)),
@@ -38,17 +39,7 @@ class CCT(nn.Module):
         else:
             raise NotImplementedError("Conv number not implementer")
 
-        # self.encoder = nn.Sequential(OrderedDict([
-        #                             ('conv1', nn.Conv2d(in_channels=3, out_channels=self.feature_dim, kernel_size=3, stride=1, padding=1, bias=False)),
-        #                             ('relu1', nn.ReLU(inplace=True)),
-        #                             ('pool1', nn.MaxPool2d(kernel_size=3, stride=2, padding=1)),
-        #                             ('conv2', nn.Conv2d(in_channels=self.feature_dim, out_channels=self.feature_dim, kernel_size=3, stride=1, padding=1, bias=False)),
-        #                             ('relu2', nn.ReLU(inplace=True)),
-        #                             ('pool2', nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
-        #                             ]))
-
         self.seqpool = nn.Linear(in_features=self.feature_dim, out_features=1)
-
         self.pos_embedding = nn.Parameter(torch.zeros(1, self.num_patches, self.feature_dim), requires_grad=True)
 
         self.drop_path_rate = [x.item() for x in torch.linspace(0, stochastic_depth, num_blocks)]

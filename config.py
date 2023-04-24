@@ -32,9 +32,7 @@ def get_args():
     parser.add_argument('--dataset', default='cifar100')
     parser.add_argument('--output_size', default=100, type=int)
     parser.add_argument('--batch_size', default=128, type=int)
-    parser.add_argument('--n_epochs', default=200, type=int)
-    parser.add_argument('--lr', default=0.1, type=float)
-    parser.add_argument('--warmup_epochs', default=0, type=int)
+    parser.add_argument('--n_epochs', default=300, type=int)
     parser.add_argument('--temp_str', default='', type=str)
 
     args = parser.parse_args()

@@ -6,15 +6,7 @@ from einops import rearrange, repeat
 
 ## https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
 
-class mySequential(nn.Sequential):
-
-    def forward(self, inputs, **kwargs):
-        for module in self._modules.values():
-            inputs = module(inputs, **kwargs)
-        return inputs
-
-
-class ViT(nn.Module):
+class ViTPool(nn.Module):
 
     def __init__(self, feature_dim=768, mlp_dim=3072, num_blocks=12, num_heads=12, output_size=10, stochastic_depth=0.1):
         
@@ -32,8 +24,7 @@ class ViT(nn.Module):
             ('linear', nn.Linear(in_features=self.patch_dim, out_features=self.feature_dim))
         ]))
 
-        self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches + 1, self.feature_dim))
-        self.class_token = nn.Parameter(torch.randn(1, 1, self.feature_dim))
+        self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches, self.feature_dim))
 
         self.drop_path_rate = [x.item() for x in torch.linspace(0, stochastic_depth, num_blocks)]
 
@@ -43,25 +34,25 @@ class ViT(nn.Module):
         for i in range(num_blocks):
             od['block'+str(i)] = TransformerBlock(self.feature_dim, self.mlp_dim, self.num_heads, drop_path_rate=self.drop_path_rate[i])
 
-        self.transformer = mySequential(od)
-        self.mlp = nn.Sequential(OrderedDict([
-            ('norm', nn.LayerNorm(self.feature_dim)),
-            ('linear', nn.Linear(in_features=self.feature_dim, out_features=output_size))
-        ]))
+        self.transformer = nn.Sequential(od)
+        self.norm = nn.LayerNorm(self.feature_dim)
+
+        self.seqpool = nn.Linear(in_features=self.feature_dim, out_features=1)
+
+        self.mlp = nn.Linear(in_features=self.feature_dim, out_features=output_size)
 
 
-    def forward(self, x, training=False):
+    def forward(self, x, train=True):
         x = self.patch_embedding(x)
-
-        class_token = repeat(self.class_token, '1 1 d -> b 1 d', b=x.shape[0])
-        x = torch.cat((class_token, x), dim=1)
         x = x + self.pos_embedding
 
         # x = self.dropout(x)
+        x = self.transformer(x)
+        x = self.norm(x)
 
-        x = self.transformer(x, training=training)
+        s = F.softmax(self.seqpool(x), dim=1).transpose(-2, -1)
+        f = torch.matmul(s, x).squeeze(-2)
         
-        f = x[:, 0]
         f = self.mlp(f)
 
         return f
@@ -117,24 +108,22 @@ class TransformerBlock(nn.Module):
             nn.Linear(in_features=mlp_dim, out_features=feature_dim),
         )
 
-        self.drop_path = DropPath(drop_path_rate)
+        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0 else nn.Identity()
 
 
-    def forward(self, x, **kwargs):
-
-        training = kwargs['training']
+    def forward(self, x):
 
         y = self.norm0(x)
         y = self.MHA(y)
 
-        y = self.drop_path(y, training) + x
-        # y = y + x
+        # y = self.drop_path(y) + x
+        y = y + x
 
         z = self.norm1(y)
         z = self.mlp(z)
 
-        z = self.drop_path(z, training) + y
-        # z = z + y
+        # z = self.drop_path(z) + y
+        z = z + y
 
         return z
 
@@ -170,5 +159,5 @@ class DropPath(nn.Module):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
 
-    def forward(self, x, training):
-        return drop_path(x, self.drop_prob, training)
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
